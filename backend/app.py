@@ -35,6 +35,9 @@ class ChatSessionPayload(BaseModel):
     current_tier: str
     current_subject: str
     history: list[dict] = []
+    current_question: dict = {}
+    inquiry_type: str = "discussion"
+
 
 class ShortAnswerPayload(BaseModel):
     question_text: str
@@ -137,7 +140,9 @@ async def run_session_cycle(payload: ChatSessionPayload):
         "retrieved_curriculum": [],
         "active_agent_node": "Initialization",
         "subject": payload.current_subject,
-        "academic_tier": payload.current_tier
+        "academic_tier": payload.current_tier,
+        "current_question": payload.current_question,
+        "inquiry_type": payload.inquiry_type
     }
 
     try:
@@ -182,10 +187,12 @@ async def evaluate_short_answer(payload: ShortAnswerPayload):
     3-Stage Pipeline for Multi-Parameter Mamdani-driven adaptive hint generation.
     """
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="Gemini API Key missing from backend environment.")
-
-    model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2, google_api_key=api_key)
+    model = None
+    if api_key:
+        try:
+            model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2, google_api_key=api_key)
+        except Exception as e:
+            print("GEMINI INIT NOTICE:", e)
 
     # ══════════════════════════════════════════════════════════════════════════════
     # STAGE 1 — Combined Grading + Error Severity + Specific Gap Diagnosis
@@ -214,6 +221,8 @@ async def evaluate_short_answer(payload: ShortAnswerPayload):
     gap_analysis = "No specific error analysis available."
     error_severity = 0.0
     try:
+        if not model:
+            raise ValueError("Offline mode: running local deterministic diagnostic engine.")
         diag_res   = model.invoke([HumanMessage(content=diagnostic_prompt)])
         clean_json = diag_res.content.replace("```json", "").replace("```", "").strip()
         diag_data  = json.loads(clean_json)
@@ -254,6 +263,7 @@ async def evaluate_short_answer(payload: ShortAnswerPayload):
         hints_requested=getattr(payload, "hints_requested", 0)
     )
     fuzzy_score       = evaluation["fuzzy_score"]
+    defuzzified_score = evaluation.get("defuzzified_score", fuzzy_score)
     performance_tier  = evaluation["performance_tier"]
     linguistic_remark = evaluation["linguistic_remark"]
     degree_of_failure = evaluation["degree_of_failure"]
@@ -344,6 +354,7 @@ async def evaluate_short_answer(payload: ShortAnswerPayload):
     return {
         "is_correct":        is_correct,
         "fuzzy_score":       fuzzy_score,
+        "defuzzified_score": defuzzified_score,
         "degree_of_failure": degree_of_failure,
         "performance_tier":  performance_tier,
         "linguistic_remark": linguistic_remark,
